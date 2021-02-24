@@ -257,6 +257,8 @@ bool init_plugin(void *self)
 
 void uninit_plugin(void *self)
 {
+    extern bool panda_please_flush_tb;
+    panda_please_flush_tb = true;
     inst_dels.clear();
     // if we don't clear tb's when this exits we have TBs which can call
     // into our exited plugin.
