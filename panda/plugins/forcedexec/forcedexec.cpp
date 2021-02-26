@@ -15,7 +15,8 @@ PANDAENDCOMMENT */
 #include "panda/tcg-utils.h"
 
 extern "C" {
-  #include "forcedexec_int_fns.h"
+#include "forcedexec_int_fns.h"
+#include "panda/panda_api.h"
 }
 
 extern "C" {
@@ -70,11 +71,14 @@ void tcg_parse(CPUState *env, TranslationBlock *tb) {
 void enable_forcedexec() {
     assert(self != NULL);
     panda_enable_callback(self, PANDA_CB_BEFORE_TCG_CODEGEN, tcg_cb);
+    panda_flush_tb();
 }
 
 void disable_forcedexec() {
     assert(self != NULL);
     panda_disable_callback(self, PANDA_CB_BEFORE_TCG_CODEGEN, tcg_cb);
+    panda_flush_tb(); // Really we only need to flush blocks we flipped-
+                      // we could track that and then optimize this.
 }
 
 
