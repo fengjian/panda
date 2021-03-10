@@ -19,9 +19,11 @@ class PandaArch():
         '''
         self.panda = panda
 
-        self.reg_sp = None # Stack pointer register ID if stored in a register
-        self.reg_pc = None # PC register ID if stored in a register
-        self.reg_retaddr = None # Return address register ID if stored in a register
+        self.reg_sp      = None # Stack pointer register ID if stored in a register
+        self.reg_pc      = None # PC register ID if stored in a register
+        self.reg_retaddr = None # Register ID that contains return address
+        self.reg_retval  = None # convention: register name that contains return val
+        self.call_conventions = None # convention: ['reg_for_arg0', 'reg_for_arg1',...]
         self.registers = {}
         '''
         Mapping of register names to indices into the appropriate CPUState array
@@ -107,6 +109,61 @@ class PandaArch():
         else:
             raise RuntimeError(f"get_pc unsupported for {self.panda.arch_name}")
 
+    def _get_arg_reg(self, idx, convention):
+        '''
+        return the name of the argument [idx] for the given arch with calling [convention]
+        '''
+
+        if self.call_conventions and convention in self.call_conventions:
+            if idx < len(self.call_conventions[convention]):
+                return self.call_conventions[convention][idx]
+            raise NotImplementedError(f"Unsupported argument number {idx}")
+
+    def _get_ret_val_reg(self, cpu, convention):
+        if self.reg_retval and convention in self.reg_retval:
+            return self.reg_retval[convention]
+        raise NotImplementedError(f"Unsupported get_retval for architecture {type(self)} {convention}")
+
+
+    def set_arg(self, cpu, idx, val, convention='default'):
+        '''
+        Set arg [idx] to [val] for given calling convention.
+
+        Note for syscalls we define arg[0] as syscall number and then 1-index the actual args
+        '''
+        reg = self._get_arg_reg(idx, convention)
+        return self.set_reg(cpu, reg, val)
+
+    def get_arg(self, cpu, idx, val, convention='default'):
+        '''
+        Return arg [idx] for given calling convention. This only works right as the guest
+        is calling or has called a function before register values are clobbered.
+
+        Note for syscalls we define arg[0] as syscall number and then 1-index the actual args
+        '''
+        reg = self._get_arg_reg(idx, convention)
+        return self.get_reg(cpu, reg, val)
+
+
+    def set_retval(self, cpu, val, convention='default'):
+        '''
+        Set return val to [val] for given calling convention. This only works
+        right after a function call has returned, otherwise the register will contain
+        a different value.
+        '''
+        reg = self._get_ret_val_reg(cpu, convention)
+        return self.set_reg(cpu, reg, val)
+
+    def get_retval(self, cpu, convention='default'):
+        '''
+        Set return val to [val] for given calling convention. This only works
+        right after a function call has returned, otherwise the register will contain
+        a different value.
+        '''
+        reg = self._get_ret_val_reg(cpu, convention)
+        return self.get_reg(cpu, reg)
+
+
     def set_pc(self, cpu, val):
         '''
         Set the program counter. Must be overloaded if self.reg_pc is None
@@ -149,7 +206,7 @@ class PandaArch():
         self.dump_regs(cpu)
         print("Stack:")
         self.dump_stack(cpu)
-    
+
     def get_args(self, cpu, num):
         return [self.get_arg(cpu,i) for i in range(num)]
 
@@ -159,17 +216,22 @@ class ArmArch(PandaArch):
     '''
     def __init__(self, panda):
         PandaArch.__init__(self, panda)
-        self.reg_sp = 13 # SP
-        self.reg_retaddr = 14 # LR
-        self.reg_pc = 15 # IP
-
         regnames = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7",
                     "R8", "R9", "R10", "R11", "R12", "SP", "LR", "IP"]
         self.registers = {regnames[idx]: idx for idx in range(len(regnames)) }
         """Register array for ARM"""
 
+        self.reg_sp      = regnames.index("SP")
+        self.reg_pc      = regnames.index("IP")
+        self.reg_retaddr = regnames.index("LR")
+
         self.reg_sp = regnames.index("SP")
         self.reg_retaddr = regnames.index("LR")
+        self.call_conventions = {"arm32": ["R0", "R1", "R2", "R3"]}
+        self.call_conventions['default'] = self.call_conventions['arm32']
+
+        self.reg_retval = {"default":    "R0",
+                           "syscall":    "R0"}
         self.reg_pc = regnames.index("IP")
 
     def _get_reg_val(self, cpu, reg):
@@ -183,7 +245,84 @@ class ArmArch(PandaArch):
         Set an arm register
         '''
         cpu.env_ptr.regs[reg] = val
-    
+
+    def get_return_value(self, env):
+        '''
+        returns register value used to return results
+        '''
+        return self.get_reg(env, "R0")
+
+    def get_return_address(self,env):
+        '''
+        looks up where ret will go
+        '''
+        return self.get_reg(env, "LR")
+
+    def get_arg(self, env, num, kernel=False):
+        '''
+        Gets arguments based on the number. Supports kernel and usermode.
+        '''
+        if kernel:
+            # adjusts for the syscall num
+            num += 1
+        arglist = ["R0", "R1", "R2", "R3"]
+        if num >= len(arglist):
+            raise ValueError(f"We only support the first {len(arglist)} arguments.")
+        return self.get_reg(env, arglist[num])
+
+class Aarch64Arch(PandaArch):
+    '''
+    Register names and accessors for ARM64 (Aarch64)
+    '''
+    def __init__(self, panda):
+        PandaArch.__init__(self, panda)
+
+        regnames = ["X0",  "X1",  "X2",  "X3",  "X4",  "X5", "X6", "X7",
+                    "XR",  "X9",  "X10", "X11", "X12", "X13", "X14",
+                    "X15", "IP0", "IP1", "PR", "X19", "X20", "X21",
+                    "X22", "X23", "X24", "X25", "X26", "X27", "X27",
+                    "X28", "FP", "LR", "SP"]
+
+        self.reg_sp = regnames.index("SP")
+
+        self.registers = {regnames[idx]: idx for idx in range(len(regnames)) }
+        """Register array for ARM"""
+
+        self.reg_sp = regnames.index("SP")
+        self.reg_retaddr = regnames.index("LR")
+
+        self.call_conventions = {"arm64":         ["X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7"],
+                                 "syscall": ["XR", "X0", "X1", "X2", "X3", "X4", "X5", "X6", "X7"]}
+        self.call_conventions['default'] = self.call_conventions['arm64']
+
+        self.reg_retval = {"default":    "X0",
+                           "syscall":    "X0"}
+
+    def get_pc(self, cpu):
+        '''
+        Overloaded function to get aarch64 program counter.
+        Note the PC is not stored in a general purpose reg
+        '''
+        return cpu.env_ptr.pc
+
+    def set_pc(self, cpu, val):
+        '''
+        Overloaded function set AArch64 program counter
+        '''
+        cpu.env_ptr.pc = val
+
+    def _get_reg_val(self, cpu, reg):
+        '''
+        Return an aarch64 register
+        '''
+        return cpu.env_ptr.xregs[reg]
+
+    def _set_reg_val(self, cpu, reg, val):
+        '''
+        Set an aarch64 register
+        '''
+        cpu.env_ptr.xregs[reg] = val
+
     def get_return_value(self, env):
         '''
         returns register value used to return results
@@ -238,7 +377,15 @@ class MipsArch(PandaArch):
                     't8', 't9', 'k0', 'k1', 'gp', 'sp', 'fp', 'ra']
 
         self.reg_sp = regnames.index('sp')
-        self.reg_retaddr = regnames.index('ra')
+        self.reg_retaddr = regnames.index("ra")
+        self.call_conventions = {"mips":          ["A0", "A1", "A2", "A3"],
+                                 "syscall": ["V0", "A0", "A1", "A2", "A3"]}
+        self.call_conventions['default'] = self.call_conventions['mips']
+
+        self.reg_retval =  {"default":    "V0",
+                            "syscall":    'V0'}
+
+
         # note names must be stored uppercase for get/set reg to work case-insensitively
         self.registers = {regnames[idx].upper(): idx for idx in range(len(regnames)) }
 
@@ -265,7 +412,7 @@ class MipsArch(PandaArch):
         Set a mips register
         '''
         cpu.env_ptr.active_tc.gpr[reg] = val
-    
+
     def get_return_value(self, env):
         '''
         returns register value used to return results
@@ -300,6 +447,11 @@ class X86Arch(PandaArch):
         regnames = ['EAX', 'ECX', 'EDX', 'EBX', 'ESP', 'EBP', 'ESI', 'EDI']
         # XXX Note order is A C D B, because that's how qemu does it . See target/i386/cpu.h
 
+        # Note we don't set self.call_conventions because stack-based arg get/set is
+        # not yet supported
+        self.reg_retval = {"default":    "EAX",
+                           "syscall":    "EAX"}
+
         self.reg_sp = regnames.index('ESP')
         self.registers = {regnames[idx]: idx for idx in range(len(regnames)) }
 
@@ -326,7 +478,7 @@ class X86Arch(PandaArch):
         Set an x86 register
         '''
         cpu.env_ptr.regs[reg] = val
-    
+
     def get_return_value(self, env):
         '''
         returns register value used to return results
@@ -365,7 +517,16 @@ class X86_64Arch(PandaArch):
                     'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15']
         # XXX Note order is A C D B, because that's how qemu does it
 
+        self.call_conventions = {'sysv':           ['RDI', 'RSI', 'RDX', 'RCX', 'R8', 'R9'],
+                                 'syscall': ['RAX', 'RDI', 'RSI', 'RDX', 'R10', 'R8', 'R9']}
+
+        self.call_conventions['default'] = self.call_conventions['sysv']
+
         self.reg_sp = regnames.index('RSP')
+        self.reg_retval = {'sysv': 'RAX',
+                           'syscall': 'RAX'}
+        self.reg_retval['default'] = self.reg_retval['sysv']
+
         self.registers = {regnames[idx]: idx for idx in range(len(regnames)) }
 
     def get_pc(self, cpu):
@@ -391,7 +552,7 @@ class X86_64Arch(PandaArch):
         Set an x86_64 register
         '''
         cpu.env_ptr.regs[reg] = val
-    
+
     def get_return_value(self, env):
         '''
         returns register value used to return results
