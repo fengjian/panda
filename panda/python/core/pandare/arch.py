@@ -91,6 +91,8 @@ class PandaArch():
                 raise ValueError(f"Invalid register name {reg}")
             else:
                 reg = self.registers[reg]
+        elif not isinstance(reg, int):
+            raise ValueError(f"Can't set register {reg}")
 
         return self._set_reg_val(cpu, reg, val)
 
@@ -118,6 +120,7 @@ class PandaArch():
             if idx < len(self.call_conventions[convention]):
                 return self.call_conventions[convention][idx]
             raise NotImplementedError(f"Unsupported argument number {idx}")
+        raise NotImplementedError(f"Unsupported convention {convention} for {type(self)}")
 
     def _get_ret_val_reg(self, cpu, convention):
         if self.reg_retval and convention in self.reg_retval:
@@ -134,7 +137,7 @@ class PandaArch():
         reg = self._get_arg_reg(idx, convention)
         return self.set_reg(cpu, reg, val)
 
-    def get_arg(self, cpu, idx, val, convention='default'):
+    def get_arg(self, cpu, idx, convention='default'):
         '''
         Return arg [idx] for given calling convention. This only works right as the guest
         is calling or has called a function before register values are clobbered.
@@ -142,7 +145,7 @@ class PandaArch():
         Note for syscalls we define arg[0] as syscall number and then 1-index the actual args
         '''
         reg = self._get_arg_reg(idx, convention)
-        return self.get_reg(cpu, reg, val)
+        return self.get_reg(cpu, reg)
 
 
     def set_retval(self, cpu, val, convention='default'):
@@ -227,7 +230,9 @@ class ArmArch(PandaArch):
 
         self.reg_sp = regnames.index("SP")
         self.reg_retaddr = regnames.index("LR")
-        self.call_conventions = {"arm32": ["R0", "R1", "R2", "R3"]}
+        self.call_conventions = {"arm32":         ["R0", "R1", "R2", "R3"],
+                                 "syscall": ["R7", "R0", "R1", "R2", "R3"], # EABI
+                                 }
         self.call_conventions['default'] = self.call_conventions['arm32']
 
         self.reg_retval = {"default":    "R0",
@@ -257,18 +262,6 @@ class ArmArch(PandaArch):
         looks up where ret will go
         '''
         return self.get_reg(env, "LR")
-
-    def get_arg(self, env, num, kernel=False):
-        '''
-        Gets arguments based on the number. Supports kernel and usermode.
-        '''
-        if kernel:
-            # adjusts for the syscall num
-            num += 1
-        arglist = ["R0", "R1", "R2", "R3"]
-        if num >= len(arglist):
-            raise ValueError(f"We only support the first {len(arglist)} arguments.")
-        return self.get_reg(env, arglist[num])
 
 class Aarch64Arch(PandaArch):
     '''
@@ -334,18 +327,6 @@ class Aarch64Arch(PandaArch):
         looks up where ret will go
         '''
         return self.get_reg(env, "LR")
-
-    def get_arg(self, env, num, kernel=False):
-        '''
-        Gets arguments based on the number. Supports kernel and usermode.
-        '''
-        if kernel:
-            # adjusts for the syscall num
-            num += 1
-        arglist = ["R0", "R1", "R2", "R3"]
-        if num >= len(arglist):
-            raise ValueError(f"We only support the first {len(arglist)} arguments.")
-        return self.get_reg(env, arglist[num])
 
 class MipsArch(PandaArch):
     '''
@@ -425,18 +406,6 @@ class MipsArch(PandaArch):
         '''
         return self.get_reg(env, "RA")
 
-    def get_arg(self, env, num, kernel=False):
-        '''
-        Gets arguments based on the number. Supports kernel and usermode.
-        '''
-        if kernel:
-            # this adjusts for the syscall argument
-            num += 1
-        arglist = ["A0","A1","A2","A3"]
-        if num >= len(arglist):
-            raise ValueError(f"We only support the first {len(arglist)} arguments.")
-        return self.get_reg(env, arglist[num])
-
 class X86Arch(PandaArch):
     '''
     Register names and accessors for x86
@@ -491,19 +460,6 @@ class X86Arch(PandaArch):
         '''
         esp = self.get_reg(env,"ESP")
         return self.panda.virtual_memory_read(env,esp,4,fmt='int')
-
-    def get_arg(self, env, num, kernel=False):
-        '''
-        Gets arguments based on the number. Supports kernel and usermode.
-        '''
-        if kernel:
-            arglist = ["EBX", "ECX", "EDX", "ESI", "EDI", "EBP"]
-            if num >= len(arglist):
-                raise ValueError(f"We only support the first {len(arglist)} arguments.")
-            return self.get_reg(env, arglist[num])
-        else:
-            esp = self.get_reg(env, "ESP")
-            return self.panda.virtual_memory_read(env, esp+(4*(num+1)),4,fmt='int')
 
 class X86_64Arch(PandaArch):
     '''
@@ -565,15 +521,3 @@ class X86_64Arch(PandaArch):
         '''
         esp = self.get_reg(env,"RSP")
         return self.panda.virtual_memory_read(env,esp,8,fmt='int')
-
-    def get_arg(self, env, num, kernel=False):
-        '''
-        Gets arguments based on the number. Supports kernel and usermode.
-        '''
-        if kernel:
-            num += 1
-
-        arglist = ["RDI", "RSI", "RDX", "R10", "R8", "R9"]
-        if num >= len(arglist):
-            raise ValueError(f"We only support the first {len(arglist)} arguments.")
-        return self.get_reg(env, arglist[num])
